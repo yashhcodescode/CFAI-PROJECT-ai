@@ -1,0 +1,218 @@
+
+from dataclasses import dataclass
+from typing import List
+import random
+
+@dataclass
+class Patient:
+    name: str
+    age: int
+    gender: str
+    symptoms: List[str]
+    duration: int
+    severity: str
+    conditions: str
+
+
+class TelemedicineAgent:
+
+    def __init__(self):
+        self.patient_history = []
+
+        self.knowledge_base = {
+            ("fever", "cough"): {
+                "condition": "Common Flu",
+                "medicine": ["Paracetamol", "Cough Syrup", "Vitamin C"],
+                "doctor": "General Physician"
+            },
+            ("headache", "blurred vision"): {
+                "condition": "Migraine",
+                "medicine": ["Paracetamol"],
+                "doctor": "Neurologist"
+            },
+            ("stomach pain", "nausea"): {
+                "condition": "Gastritis",
+                "medicine": ["Antacid", "ORS"],
+                "doctor": "Gastroenterologist"
+            },
+            ("chest pain", "shortness of breath"): {
+                "condition": "Cardiac Risk",
+                "medicine": ["Seek Immediate Medical Care"],
+                "doctor": "Cardiologist"
+            },
+            ("skin rash", "itching"): {
+                "condition": "Skin Allergy",
+                "medicine": ["Cetirizine", "Calamine Lotion"],
+                "doctor": "Dermatologist"
+            },
+            ("cold", "sneezing"): {
+                "condition": "Common Cold",
+                "medicine": ["Paracetamol", "Saline Nasal Spray"],
+                "doctor": "General Physician"
+            }
+        }
+
+    def diagnose(self, symptoms):
+        symptom_set = set(s.strip().lower() for s in symptoms)
+
+        best_match = None
+        highest_score = 0
+
+        for rule, result in self.knowledge_base.items():
+            score = len(set(rule).intersection(symptom_set))
+            if score > highest_score:
+                highest_score = score
+                best_match = result
+
+        if best_match:
+            return best_match
+
+        return {
+            "condition": "General Health Issue",
+            "medicine": ["Consult Doctor"],
+            "doctor": "General Physician"
+        }
+
+    def calculate_risk(self, severity, duration):
+        score = 0
+
+        if severity.lower() == "mild":
+            score += 20
+        elif severity.lower() == "moderate":
+            score += 50
+        elif severity.lower() == "severe":
+            score += 80
+
+        if duration > 7:
+            score += 20
+
+        return min(score, 100)
+
+    def probability_estimation(self, risk_score):
+        return round(risk_score * random.uniform(0.8, 1.0), 2)
+
+    def emergency_check(self, symptoms):
+        emergency = [
+            "chest pain",
+            "shortness of breath",
+            "unconscious",
+            "severe bleeding"
+        ]
+        return any(sym.lower() in emergency for sym in symptoms)
+
+    def appointment_priority(self, risk):
+        if risk >= 80:
+            return "Emergency"
+        elif risk >= 50:
+            return "Within 24 Hours"
+        return "Routine Consultation"
+
+    def generate_report(self, patient):
+        diagnosis = self.diagnose(patient.symptoms)
+        risk_score = self.calculate_risk(
+            patient.severity,
+            patient.duration
+        )
+
+        report = {
+            "Patient Name": patient.name,
+            "Age": patient.age,
+            "Gender": patient.gender,
+            "Condition": diagnosis["condition"],
+            "Medicines": ", ".join(diagnosis["medicine"]),
+            "Doctor": diagnosis["doctor"],
+            "Risk Score": risk_score,
+            "Probability": self.probability_estimation(risk_score),
+            "Priority": self.appointment_priority(risk_score)
+        }
+
+        self.patient_history.append(report)
+        return report
+
+    def show_history(self):
+        if not self.patient_history:
+            print("No records found.")
+            return
+
+        for i, record in enumerate(self.patient_history, start=1):
+            print(f"\n--- Record {i} ---")
+            for k, v in record.items():
+                print(f"{k}: {v}")
+
+    def display_rules(self):
+        print("\n===== KNOWLEDGE BASE =====")
+        for symptoms, result in self.knowledge_base.items():
+            print(f"\nSymptoms: {symptoms}")
+            print(f"Condition: {result['condition']}")
+            print(f"Doctor: {result['doctor']}")
+
+    def find_patient(self, name):
+        for record in self.patient_history:
+            if record["Patient Name"].lower() == name.lower():
+                return record
+        return None
+
+
+def main():
+    agent = TelemedicineAgent()
+
+    while True:
+        print("\n===== AI TELEMEDICINE AGENT =====")
+        print("1. Register Patient")
+        print("2. View Patient History")
+        print("3. Search Patient")
+        print("4. View Knowledge Base")
+        print("5. Exit")
+
+        choice = input("Enter Choice: ").strip()
+
+        if choice == "1":
+            try:
+                name = input("Name: ")
+                age = int(input("Age: "))
+                gender = input("Gender: ")
+                symptoms = [s.strip().lower() for s in input(
+                    "Symptoms (comma separated): ").split(",")]
+                duration = int(input("Duration (days): "))
+                severity = input("Severity (Mild/Moderate/Severe): ")
+                conditions = input("Existing Conditions: ")
+
+                patient = Patient(
+                    name, age, gender, symptoms,
+                    duration, severity, conditions
+                )
+
+                report = agent.generate_report(patient)
+
+                print("\nDISCLAIMER: Educational use only.")
+                if agent.emergency_check(symptoms):
+                    print("EMERGENCY ALERT: Visit nearest hospital immediately!")
+
+                print("\n===== AI REPORT =====")
+                for k, v in report.items():
+                    print(f"{k}: {v}")
+
+            except ValueError:
+                print("Invalid numeric input.")
+
+        elif choice == "2":
+            agent.show_history()
+
+        elif choice == "3":
+            name = input("Enter patient name: ")
+            result = agent.find_patient(name)
+            print(result if result else "Patient not found.")
+
+        elif choice == "4":
+            agent.display_rules()
+
+        elif choice == "5":
+            print("Thank you for using AI Telemedicine Agent.")
+            break
+
+        else:
+            print("Invalid choice.")
+
+
+if __name__ == "__main__":
+    main()
