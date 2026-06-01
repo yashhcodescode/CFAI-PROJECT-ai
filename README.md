@@ -1,0 +1,1 @@
+An intelligent console-based healthcare assistant built using Python that performs symptom analysis, risk assessment, emergency detection, specialist recommendation, and OTC medicine suggestions using Artificial Intelligence concepts such as Knowledge Representation, Rule-Based Inference, Decision Making, and Expert Systems.
