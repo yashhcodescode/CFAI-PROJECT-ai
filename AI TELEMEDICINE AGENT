@@ -1,219 +1,558 @@
-# ---CFAI PROJECT---
-# AI Telemedicine agent
-from dataclasses import dataclass
-from typing import List
+"""
+MediMate AI - Telemedicine Assistant
+A simple command-line health guidance tool.
+
+DISCLAIMER: This is an educational project only.
+NOT a substitute for professional medical advice.
+Always consult a real doctor for medical concerns.
+
+Risk Score is calculated by a Random Forest model
+trained on a generated medical dataset — NOT hardcoded.
+"""
+
+import os
+import json
+import time
 import random
+import joblib
+import warnings
+import re
+import numpy as np
+import pandas as pd
+from datetime import datetime
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_absolute_error
 
-@dataclass
-class Patient:
-    name: str
-    age: int
-    gender: str
-    symptoms: List[str]
-    duration: int
-    severity: str
-    conditions: str
+warnings.filterwarnings("ignore")
+random.seed(42)
+np.random.seed(42)
 
+# ─────────────────────────────────────────────────────
+# KNOWLEDGE BASE
+# ─────────────────────────────────────────────────────
 
-class TelemedicineAgent:
+DISEASES = {
+    "Common Flu": {
+        "keywords": ["fever", "cough", "body pain", "fatigue", "chills", "bodyache", "flu"],
+        "specialist": "General Physician",
+        "medicines": ["Paracetamol", "Vitamin C", "Cetirizine"],
+        "precautions": ["Rest well", "Drink plenty of water", "Avoid cold food"],
+    },
+    "Common Cold": {
+        "keywords": ["sneezing", "runny nose", "sore throat", "cold", "stuffy nose", "sniffles"],
+        "specialist": "General Physician",
+        "medicines": ["Paracetamol", "Nasal drops", "Throat lozenges"],
+        "precautions": ["Drink warm fluids", "Rest", "Avoid dust and smoke"],
+    },
+    "Migraine": {
+        "keywords": ["headache", "blurred vision", "nausea", "light sensitivity", "vomiting", "dizziness", "migraine"],
+        "specialist": "Neurologist",
+        "medicines": ["Ibuprofen", "OTC pain relief", "Anti-nausea tablets"],
+        "precautions": ["Rest in a dark quiet room", "Avoid screen time", "Manage stress"],
+    },
+    "Gastritis": {
+        "keywords": ["stomach pain", "nausea", "bloating", "indigestion", "acidity", "stomach ache", "heartburn"],
+        "specialist": "Gastroenterologist",
+        "medicines": ["Antacid", "Omeprazole (OTC)", "Domperidone (OTC)"],
+        "precautions": ["Avoid spicy food", "Eat small meals", "No alcohol or caffeine"],
+    },
+    "Skin Allergy": {
+        "keywords": ["itching", "rash", "redness", "hives", "swelling", "skin irritation", "itchy"],
+        "specialist": "Dermatologist",
+        "medicines": ["Cetirizine", "Calamine lotion", "Hydrocortisone cream"],
+        "precautions": ["Avoid allergens", "Do not scratch", "Use mild soap"],
+    },
+    "Dengue": {
+        "keywords": ["high fever", "severe body pain", "rash", "behind eye pain", "low platelet", "dengue"],
+        "specialist": "General Physician",
+        "medicines": ["Paracetamol only (avoid Aspirin)", "ORS for hydration"],
+        "precautions": ["Avoid mosquitoes", "Stay hydrated", "Monitor platelet count"],
+    },
+    "Asthma": {
+        "keywords": ["shortness of breath", "wheezing", "chest tightness", "breathing difficulty", "asthma"],
+        "specialist": "Pulmonologist",
+        "medicines": ["Bronchodilator inhaler (needs prescription)", "Avoid triggers"],
+        "precautions": ["Avoid dust and smoke", "Always carry inhaler", "Monitor breathing"],
+    },
+    "Urinary Tract Infection": {
+        "keywords": ["burning urination", "frequent urination", "pelvic pain", "cloudy urine", "uti", "urine"],
+        "specialist": "Urologist",
+        "medicines": ["Drink lots of water", "Cranberry OTC", "Antibiotics (needs prescription)"],
+        "precautions": ["Stay hydrated", "Maintain hygiene", "Do not hold urine"],
+    },
+    "Hypertension": {
+        "keywords": ["headache", "dizziness", "chest tightness", "blurred vision", "high blood pressure", "bp", "hypertension"],
+        "specialist": "Cardiologist",
+        "medicines": ["Consult doctor before taking any medicine"],
+        "precautions": ["Monitor blood pressure daily", "Low salt diet", "Reduce stress"],
+    },
+    "Anxiety": {
+        "keywords": ["anxiety", "restlessness", "nervousness", "panic", "worry", "insomnia", "sleep issues", "anxious"],
+        "specialist": "Psychiatrist",
+        "medicines": ["Chamomile tea", "Magnesium supplement (OTC)", "Consult doctor for prescription"],
+        "precautions": ["Practice deep breathing", "Regular exercise", "Reduce caffeine intake"],
+    },
+}
 
-    def __init__(self):
-        self.patient_history = []
+EMERGENCY_SYMPTOMS = [
+    "chest pain", "severe chest pain", "shortness of breath",
+    "unconscious", "severe bleeding", "heart attack",
+    "stroke", "paralysis", "difficulty breathing", "not breathing"
+]
 
-        self.knowledge_base = {
-            ("fever", "cough"): {
-                "condition": "Common Flu",
-                "medicine": ["Paracetamol", "Cough Syrup", "Vitamin C"],
-                "doctor": "General Physician"
-            },
-            ("headache", "blurred vision"): {
-                "condition": "Migraine",
-                "medicine": ["Paracetamol"],
-                "doctor": "Neurologist"
-            },
-            ("stomach pain", "nausea"): {
-                "condition": "Gastritis",
-                "medicine": ["Antacid", "ORS"],
-                "doctor": "Gastroenterologist"
-            },
-            ("chest pain", "shortness of breath"): {
-                "condition": "Cardiac Risk",
-                "medicine": ["Seek Immediate Medical Care"],
-                "doctor": "Cardiologist"
-            },
-            ("skin rash", "itching"): {
-                "condition": "Skin Allergy",
-                "medicine": ["Cetirizine", "Calamine Lotion"],
-                "doctor": "Dermatologist"
-            },
-            ("cold", "sneezing"): {
-                "condition": "Common Cold",
-                "medicine": ["Paracetamol", "Saline Nasal Spray"],
-                "doctor": "General Physician"
-            }
-        }
+MODEL_FILE  = "risk_model.pkl"
+DATASET_FILE = "medical_dataset.csv"
+HISTORY_FILE = "history.json"
 
-    def diagnose(self, symptoms):
-        symptom_set = set(s.strip().lower() for s in symptoms)
+# ─────────────────────────────────────────────────────
+# STEP 1 — GENERATE DATASET
+# ─────────────────────────────────────────────────────
 
-        best_match = None
-        highest_score = 0
+def generate_dataset(n=3000):
+    disease_names = list(DISEASES.keys())
+    disease_base_risk = {
+        "Common Flu": 25, "Common Cold": 15, "Migraine": 45, "Gastritis": 40,
+        "Skin Allergy": 20, "Dengue": 70, "Asthma": 65, "Urinary Tract Infection": 35,
+        "Hypertension": 60, "Anxiety": 30,
+    }
 
-        for rule, result in self.knowledge_base.items():
-            score = len(set(rule).intersection(symptom_set))
-            if score > highest_score:
-                highest_score = score
-                best_match = result
+    rows = []
+    for _ in range(n):
+        disease = random.choice(disease_names)
+        age = random.randint(5, 80)
+        duration = random.randint(1, 30)
+        severity = random.choice([1, 2, 3])
+        d_index = disease_names.index(disease)
 
-        if best_match:
-            return best_match
+        base = disease_base_risk[disease]
+        age_factor      = 5 if age > 60 else (2 if age > 40 else 0)
+        duration_factor = min(20, duration * 0.8)
+        severity_factor = {1: 0, 2: 15, 3: 35}[severity]
+        noise           = random.uniform(-8, 8)
 
-        return {
-            "condition": "General Health Issue",
-            "medicine": ["Consult Doctor"],
-            "doctor": "General Physician"
-        }
+        risk = base + age_factor + duration_factor + severity_factor + noise
+        risk = max(5, min(100, risk))
 
-    def calculate_risk(self, severity, duration):
-        score = 0
+        rows.append({
+            "age": age,
+            "duration_days": duration,
+            "severity": severity,
+            "disease_index": d_index,
+            "risk_score": round(risk, 2),
+        })
 
-        if severity.lower() == "mild":
-            score += 20
-        elif severity.lower() == "moderate":
-            score += 50
-        elif severity.lower() == "severe":
-            score += 80
+    df = pd.DataFrame(rows)
+    df.to_csv(DATASET_FILE, index=False)
+    return df
 
-        if duration > 7:
-            score += 20
+# ─────────────────────────────────────────────────────
+# STEP 2 — TRAIN MODEL
+# ─────────────────────────────────────────────────────
 
-        return min(score, 100)
+def train_model(df):
+    X = df[["age", "duration_days", "severity", "disease_index"]]
+    y = df["risk_score"]
 
-    def probability_estimation(self, risk_score):
-        return round(risk_score * random.uniform(0.8, 1.0), 2)
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-    def emergency_check(self, symptoms):
-        emergency = [
-            "chest pain",
-            "shortness of breath",
-            "unconscious",
-            "severe bleeding"
-        ]
-        return any(sym.lower() in emergency for sym in symptoms)
+    model = RandomForestRegressor(n_estimators=100, random_state=42)
+    model.fit(X_train, y_train)
 
-    def appointment_priority(self, risk):
-        if risk >= 80:
-            return "Emergency"
-        elif risk >= 50:
-            return "Within 24 Hours"
-        return "Routine Consultation"
+    preds = model.predict(X_test)
+    mae   = mean_absolute_error(y_test, preds)
 
-    def generate_report(self, patient):
-        diagnosis = self.diagnose(patient.symptoms)
-        risk_score = self.calculate_risk(
-            patient.severity,
-            patient.duration
-        )
+    joblib.dump(model, MODEL_FILE)
+    return model, mae
 
-        report = {
-            "Patient Name": patient.name,
-            "Age": patient.age,
-            "Gender": patient.gender,
-            "Condition": diagnosis["condition"],
-            "Medicines": ", ".join(diagnosis["medicine"]),
-            "Doctor": diagnosis["doctor"],
-            "Risk Score": risk_score,
-            "Probability": self.probability_estimation(risk_score),
-            "Priority": self.appointment_priority(risk_score)
-        }
+# ─────────────────────────────────────────────────────
+# STEP 3 — PREDICT RISK SCORE
+# ─────────────────────────────────────────────────────
 
-        self.patient_history.append(report)
-        return report
+def predict_risk(model, disease_name, age, duration, severity_int):
+    disease_names = list(DISEASES.keys())
+    # If disease name is valid, use its index. If it's a completely unknown issue, use a neutral middle-ground index
+    d_index = disease_names.index(disease_name) if disease_name in disease_names else len(disease_names) // 2
 
-    def show_history(self):
-        if not self.patient_history:
-            print("No records found.")
-            return
+    features = pd.DataFrame([{
+        "age": age,
+        "duration_days": duration,
+        "severity": severity_int,
+        "disease_index": d_index,
+    }])
 
-        for i, record in enumerate(self.patient_history, start=1):
-            print(f"\n--- Record {i} ---")
-            for k, v in record.items():
-                print(f"{k}: {v}")
+    risk_score = model.predict(features)[0]
+    return round(max(5, min(100, risk_score)))
 
-    def display_rules(self):
-        print("\n===== KNOWLEDGE BASE =====")
-        for symptoms, result in self.knowledge_base.items():
-            print(f"\nSymptoms: {symptoms}")
-            print(f"Condition: {result['condition']}")
-            print(f"Doctor: {result['doctor']}")
+# ─────────────────────────────────────────────────────
+# HELPERS
+# ─────────────────────────────────────────────────────
 
-    def find_patient(self, name):
-        for record in self.patient_history:
-            if record["Patient Name"].lower() == name.lower():
-                return record
-        return None
+def divider():
+    print("-" * 55)
 
+def big_divider():
+    print("=" * 55)
 
-def main():
-    agent = TelemedicineAgent()
+def check_emergency(text):
+    t = text.lower()
+    return [e for e in EMERGENCY_SYMPTOMS if e in t]
+
+def diagnose(symptoms_text):
+    """Enhanced symptom matching using string processing and normalized scoring."""
+    # Clean input text: lowercase and remove basic punctuation symbols
+    clean_text = re.sub(r'[^\w\s]', ' ', symptoms_text.lower())
+    words = clean_text.split()
+
+    scores = {}
+    for disease, info in DISEASES.items():
+        match_count = 0
+        for kw in info["keywords"]:
+            # Check if multi-word keywords match exactly in text (e.g., 'body pain')
+            if " " in kw and kw in clean_text:
+                match_count += 2  # Give higher weights to explicit multi-word matches
+            # Check if singular keyword blocks exist inside the tokenized word array
+            elif kw in words:
+                match_count += 1
+
+        if match_count > 0:
+            scores[disease] = match_count
+
+    if not scores:
+        return None, 0
+
+    # Pick the disease with the maximum matching weight
+    best = max(scores, key=scores.get)
+    total_kw = len(DISEASES[best]["keywords"])
+
+    # Calculate an intuitive confidence percentage
+    confidence = min(95, int((scores[best] / (total_kw * 0.5)) * 100))
+    if confidence < 15:
+        confidence = 25 # Minimum confidence floor baseline
+
+    return best, confidence
+
+def get_priority(risk_score):
+    if risk_score >= 75:
+        return "EMERGENCY - Visit hospital immediately"
+    elif risk_score >= 50:
+        return "Book appointment within 24 hours"
+    else:
+        return "Routine consultation"
+
+def get_risk_label(risk_score):
+    if risk_score <= 40:
+        return "Low"
+    elif risk_score <= 70:
+        return "Moderate"
+    else:
+        return "High"
+
+def load_history():
+    if os.path.exists(HISTORY_FILE):
+        with open(HISTORY_FILE) as f:
+            return json.load(f)
+    return []
+
+def save_to_history(record):
+    history = load_history()
+    history.append(record)
+    with open(HISTORY_FILE, "w") as f:
+        json.dump(history, f, indent=2)
+
+# ─────────────────────────────────────────────────────
+# SCREENS
+# ─────────────────────────────────────────────────────
+
+def show_welcome():
+    os.system("cls" if os.name == "nt" else "clear")
+    big_divider()
+    print("        MediMate AI - Telemedicine Assistant")
+    print("         AI-Powered Preliminary Health Guidance")
+    big_divider()
+    print()
+    print("  ⚠  DISCLAIMER: Educational use only.")
+    print("     Always consult a real doctor for medical advice.")
+    print()
+    divider()
+
+def start_consultation(model):
+    os.system("cls" if os.name == "nt" else "clear")
+    big_divider()
+    print("               NEW CONSULTATION")
+    big_divider()
+    print()
+
+    print("  Enter your details below:\n")
+    name = input("  Your Name       : ").strip() or "Patient"
 
     while True:
-        print("\n===== AI TELEMEDICINE AGENT =====")
-        print("1. Register Patient")
-        print("2. View Patient History")
-        print("3. Search Patient")
-        print("4. View Knowledge Base")
-        print("5. Exit")
+        a = input("  Your Age        : ").strip()
+        if a.isdigit() and 1 <= int(a) <= 120:
+            age = int(a)
+            break
+        print("  Please enter a valid age.")
 
-        choice = input("Enter Choice: ").strip()
+    print("  Gender          : 1) Male   2) Female   3) Other")
+    gender = {"1": "Male", "2": "Female", "3": "Other"}.get(
+        input("  Your choice     : ").strip(), "Not specified"
+    )
+
+    print()
+    divider()
+    print("\n  Describe your symptoms in simple words.")
+    print("  Example: fever, headache, body pain, cough\n")
+    symptoms = input("  Your symptoms   : ").strip()
+
+    print()
+    while True:
+        d = input("  Duration (days) : ").strip()
+        if d.isdigit() and int(d) >= 1:
+            duration = int(d)
+            break
+        print("  Please enter number of days (e.g. 3).")
+
+    print()
+    print("  How severe are your symptoms?")
+    print("  1) Mild   2) Moderate   3) Severe")
+    while True:
+        sv = input("  Your choice     : ").strip()
+        if sv in ["1", "2", "3"]:
+            severity_int   = int(sv)
+            severity_label = {"1": "Mild", "2": "Moderate", "3": "Severe"}[sv]
+            break
+        print("  Please enter 1, 2, or 3.")
+
+    existing = input("\n  Any existing conditions? (or press Enter to skip): ").strip()
+
+    print()
+    divider()
+    print("  Analysing your symptoms", end="", flush=True)
+    for _ in range(5):
+        time.sleep(0.4)
+        print(".", end="", flush=True)
+    print()
+    divider()
+
+    emergency = check_emergency(symptoms)
+    if emergency:
+        print()
+        print("  !! EMERGENCY ALERT !!")
+        print()
+        print("  Critical symptoms detected:")
+        for e in emergency:
+            print(f"     - {e.title()}")
+        print()
+        print("  Please go to the nearest hospital IMMEDIATELY.")
+        print("  Call emergency services: 108 or 112")
+        print()
+        divider()
+        input("  Press Enter to still see AI analysis...")
+        print()
+
+    # Diagnose disease using our improved parsing framework
+    disease, confidence = diagnose(symptoms)
+
+    # Calculate dynamic risk score variations
+    risk_score = predict_risk(model, disease if disease else "Unknown", age, duration, severity_int)
+
+    risk_label = get_risk_label(risk_score)
+    priority   = get_priority(risk_score)
+
+    os.system("cls" if os.name == "nt" else "clear")
+    big_divider()
+    print("           AI HEALTH GUIDANCE REPORT")
+    big_divider()
+    print()
+    print(f"  Patient   : {name}  |  Age: {age}  |  {gender}")
+    print(f"  Date      : {datetime.now().strftime('%d %b %Y  %H:%M')}")
+    print()
+    divider()
+
+    if emergency:
+        print("  !! EMERGENCY - VISIT HOSPITAL IMMEDIATELY !!")
+        divider()
+
+    if disease:
+        info = DISEASES[disease]
+        print(f"\n  Possible Condition : {disease}")
+        print(f"  Confidence Level   : {confidence}%")
+        print()
+        print(f"  Risk Score         : {risk_score} / 100  (ML Model Predicted)")
+        print(f"  Risk Level         : {risk_label}")
+        print(f"  Appointment        : {priority}")
+        print()
+        divider()
+        print(f"\n  Recommended Specialist : {info['specialist']}")
+        print()
+        print("  Suggested OTC Medicines:")
+        for m in info["medicines"]:
+            print(f"     - {m}")
+        print()
+        print("  Precautions:")
+        for p in info["precautions"]:
+            print(f"     - {p}")
+        if existing:
+            print()
+            print(f"  Existing Conditions : {existing}")
+            print("  Inform your doctor about your existing conditions.")
+    else:
+        print("\n  Could not identify a specific condition from your symptoms.")
+        print(f"\n  Risk Score  : {risk_score} / 100  (ML Model Predicted)")
+        print(f"  Risk Level  : {risk_label}")
+        print(f"  Appointment : {priority}")
+        print("\n  Please consult a General Physician for a precise evaluation.")
+
+    print()
+    divider()
+    print("  DISCLAIMER: This is for educational purposes only.")
+    print("  Please consult a qualified doctor for proper treatment.")
+    divider()
+
+    save_to_history({
+        "date": datetime.now().strftime("%d %b %Y %H:%M"),
+        "name": name,
+        "age": age,
+        "symptoms": symptoms,
+        "severity": severity_label,
+        "duration_days": duration,
+        "disease": disease or "Unknown",
+        "confidence": f"{confidence}%",
+        "risk_score": risk_score,
+        "risk_level": risk_label,
+        "specialist": DISEASES[disease]["specialist"] if disease else "General Physician",
+    })
+
+    print()
+    input("  Press Enter to return to the main menu...")
+
+def show_history():
+    os.system("cls" if os.name == "nt" else "clear")
+    big_divider()
+    print("             CONSULTATION HISTORY")
+    big_divider()
+
+    history = load_history()
+    if not history:
+        print("\n  No consultations found yet.\n")
+        input("  Press Enter to go back...")
+        return
+
+    print(f"\n  Total consultations: {len(history)}\n")
+    divider()
+
+    for i, r in enumerate(history, 1):
+        print(f"\n  [{i}]  Date      : {r.get('date')}")
+        print(f"       Name      : {r.get('name')}  (Age {r.get('age')})")
+        print(f"       Symptoms  : {r.get('symptoms')}")
+        print(f"       Diagnosis : {r.get('disease')}")
+        print(f"       Risk Score: {r.get('risk_score')}/100  ({r.get('risk_level')})")
+        print(f"       Specialist: {r.get('specialist')}")
+        divider()
+
+    print()
+    input("  Press Enter to go back...")
+
+def show_ai_concepts():
+    os.system("cls" if os.name == "nt" else "clear")
+    big_divider()
+    print("         AI CONCEPTS USED IN MediMate AI")
+    big_divider()
+
+    concepts = [
+        ("CO1", "Knowledge Representation",
+         "A knowledge base stores diseases, symptoms,\n"
+         "     specialists and medicines as structured data."),
+        ("CO2", "Search-Based Symptom Matching",
+         "User symptoms are matched against disease\n"
+         "     keyword lists to find the best diagnosis."),
+        ("CO3", "Constraint-Based Emergency Rules",
+         "Hard rules detect critical symptoms like\n"
+         "     chest pain and trigger emergency alerts."),
+        ("CO4", "Utility-Based Decision Making",
+         "Appointment priority is decided based on\n"
+         "     the ML-predicted risk score."),
+        ("CO5", "Probability and Uncertainty",
+         "Confidence % shows how closely symptoms\n"
+         "     matched the predicted disease keywords."),
+        ("CO6", "Hybrid AI System",
+         "Combines rule-based emergency detection\n"
+         "     with ML risk prediction (Random Forest)."),
+    ]
+
+    for code, title, desc in concepts:
+        print()
+        print(f"  [{code}]  {title}")
+        print(f"     {desc}")
+
+    print()
+    divider()
+    input("  Press Enter to go back...")
+
+def setup_model():
+    if os.path.exists(MODEL_FILE):
+        print("  Loading trained risk model...", end="", flush=True)
+        model = joblib.load(MODEL_FILE)
+        print(" done.")
+        return model
+
+    print("  No trained model found. Training now...")
+    print()
+
+    print("  Step 1/2 : Generating medical dataset", end="", flush=True)
+    df = generate_dataset(3000)
+    for _ in range(4):
+        time.sleep(0.3)
+        print(".", end="", flush=True)
+    print(f" done.  ({len(df)} patient records)")
+
+    print("  Step 2/2 : Training Random Forest model", end="", flush=True)
+    model, mae = train_model(df)
+    for _ in range(4):
+        time.sleep(0.3)
+        print(".", end="", flush=True)
+    print(f" done.")
+    print()
+    print(f"  Model accuracy (Mean Absolute Error): {mae:.2f} points")
+    print(f"  Dataset saved    → {DATASET_FILE}")
+    print(f"  Model saved      → {MODEL_FILE}")
+    print()
+    return model
+
+def main():
+    os.system("cls" if os.name == "nt" else "clear")
+    big_divider()
+    print("        MediMate AI - Telemedicine Assistant")
+    big_divider()
+    print()
+    model = setup_model()
+    input("  Press Enter to continue to the main menu...")
+
+    while True:
+        show_welcome()
+        print("  MAIN MENU\n")
+        print("  1.  Start New Consultation")
+        print("  2.  View Consultation History")
+        print("  3.  AI Concepts Used")
+        print("  4.  Exit")
+        print()
+        divider()
+        choice = input("  Enter your choice (1-4): ").strip()
 
         if choice == "1":
-            try:
-                name = input("Name: ")
-                age = int(input("Age: "))
-                gender = input("Gender: ")
-                symptoms = [s.strip().lower() for s in input(
-                    "Symptoms (comma separated): ").split(",")]
-                duration = int(input("Duration (days): "))
-                severity = input("Severity (Mild/Moderate/Severe): ")
-                conditions = input("Existing Conditions: ")
-
-                patient = Patient(
-                    name, age, gender, symptoms,
-                    duration, severity, conditions
-                )
-
-                report = agent.generate_report(patient)
-
-                print("\nDISCLAIMER: Educational use only.")
-                if agent.emergency_check(symptoms):
-                    print("EMERGENCY ALERT: Visit nearest hospital immediately!")
-
-                print("\n===== AI REPORT =====")
-                for k, v in report.items():
-                    print(f"{k}: {v}")
-
-            except ValueError:
-                print("Invalid numeric input.")
-
+            start_consultation(model)
         elif choice == "2":
-            agent.show_history()
-
+            show_history()
         elif choice == "3":
-            name = input("Enter patient name: ")
-            result = agent.find_patient(name)
-            print(result if result else "Patient not found.")
-
+            show_ai_concepts()
         elif choice == "4":
-            agent.display_rules()
-
-        elif choice == "5":
-            print("Thank you for using AI Telemedicine Agent.")
+            print()
+            print("  Thank you for using MediMate AI. Stay healthy!")
+            print()
             break
-
         else:
-            print("Invalid choice.")
-
+            print("\n  Invalid choice. Please enter 1, 2, 3, or 4.")
+            time.sleep(1)
 
 if __name__ == "__main__":
     main()
